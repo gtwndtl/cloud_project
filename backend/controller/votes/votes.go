@@ -10,7 +10,28 @@ import (
 
 	"example.com/se/config"
 	"example.com/se/entity"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/push"
+	"log"
 )
+
+const pushGatewayURL = "http://pushgateway:9091" // แก้เป็น URL pushgateway ของคุณ
+
+func sendVoteCreatedMetric() {
+	gauge := prometheus.NewGauge(prometheus.GaugeOpts{
+		Name: "votes_created_total",
+		Help: "Total number of votes created.",
+	})
+
+	gauge.Set(1) // นับ 1 vote ต่อครั้ง
+
+	if err := push.New(pushGatewayURL, "vote_job").
+		Collector(gauge).
+		Push(); err != nil {
+		log.Printf("Could not push vote metric to Pushgateway: %v", err)
+	}
+}
 
 func GetAll(c *gin.Context) {
 	var votes []entity.Votes
@@ -85,6 +106,9 @@ func CreateVote(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to record vote", "details": err.Error()})
 		return
 	}
+
+	// ส่ง metric ไปยัง Pushgateway
+	sendVoteCreatedMetric()
 
 	c.JSON(http.StatusCreated, gin.H{
 		"message": "Vote recorded successfully",

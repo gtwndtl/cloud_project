@@ -1,0 +1,95 @@
+version: '3.8'
+
+services:
+  rabbitmq:
+    image: rabbitmq:3-management
+    container_name: rabbitmq
+    ports:
+      - "5672:5672"    # RabbitMQ queue
+      - "15672:15672"  # RabbitMQ Web UI
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - mynetwork
+
+  prometheus:
+    image: prom/prometheus
+    container_name: prometheus
+    restart: unless-stopped
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--web.external-url=/prometheus/'
+      - '--web.route-prefix=/'
+    ports:
+      - "9090:9090"
+    networks:
+      - mynetwork
+
+  pushgateway:
+    image: prom/pushgateway
+    container_name: pushgateway
+    ports:
+      - "9091:9091"
+    networks:
+      - mynetwork
+
+  grafana:
+    image: grafana/grafana
+    container_name: grafana
+    ports:
+      - ":3000"
+    environment:
+      - GF_SERVER_ROOT_URL=http://localhost/grafana/
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana_data:/var/lib/grafana
+    networks:
+      - mynetwork
+
+  backend:
+    build: ./backend
+    container_name: backend
+    restart: always
+    depends_on:
+      - rabbitmq
+    ports:
+      - "8000:8000"
+    # volumes:
+    #   - ./backend:/app  # ✅ ทำให้ vote_system.db ถูกเก็บไว้บนโฮสต์ด้วย
+    networks:
+      - mynetwork
+
+  # frontend:
+  #   build: ./frontend
+  #   container_name: frontend
+  #   restart: always
+  #   depends_on:
+  #     - backend
+  #     - nginx
+  #   ports:
+  #     - "5173:5173"
+  #   networks:
+  #     - mynetwork
+
+  nginx:
+    build: ./api-gateway
+    container_name: nginx
+    restart: always
+    ports:
+      - "80:80"
+    networks:
+      - mynetwork
+
+volumes:
+  rabbitmq_data:
+  grafana_data:
+  pg_data:
+
+networks:
+  mynetwork:
+    driver: bridge

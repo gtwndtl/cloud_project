@@ -12,7 +12,12 @@ import (
 	"net/http"
 )
 
-const PORT = "8000"
+
+const (
+    PORT           = "8000"
+    PushGatewayURL = "http://pushgateway:9091"
+    JobName        = "online_voting_system"
+)
 
 func main() {
 
@@ -30,65 +35,50 @@ func main() {
 
 	// Auth Route
 
-	r.POST("/signup", users.SignUp)
-
-	r.POST("/signin", users.SignIn)
-
-	router := r.Group("/")
-
+	api := r.Group("/api")
 	{
+		api.POST("/signup", users.SignUp)
+		api.POST("/signin", users.SignIn)
+		api.GET("/genders", genders.GetAll)
+		// Protected Routes
+		api.Use(middlewares.Authorizes()) // ✅ ใส่ middleware ที่นี่
+		{
+			api.PUT("/user/:id", users.Update)
+			api.GET("/users", users.GetAll)
+			api.GET("/user/:id", users.Get)
+			api.DELETE("/user/:id", users.Delete)
 
-		router.Use(middlewares.Authorizes())
+			api.POST("/candidate", candidates.Create)
+			api.PUT("/candidate/:id", candidates.Update)
+			api.GET("/candidates", candidates.GetAll)
+			api.GET("/candidate/:id", candidates.Get)
+			api.DELETE("/candidate/:id", candidates.Delete)
 
-		// User Route
+			api.POST("/election", elections.Create)
+			api.PUT("/election/:id", elections.Update)
+			api.GET("/elections", elections.GetAll)
+			api.GET("/election/:id", elections.Get)
+			api.DELETE("/election/:id", elections.Delete)
 
-		router.PUT("/user/:id", users.Update)
-
-		router.GET("/users", users.GetAll)
-
-		router.GET("/user/:id", users.Get)
-
-		router.DELETE("/user/:id", users.Delete)
-
-		router.POST("/candidate", candidates.Create)
-
-		router.PUT("/candidate/:id", candidates.Update)
-
-		router.GET("/candidates", candidates.GetAll)
-
-		router.GET("/candidate/:id", candidates.Get)
-
-		router.DELETE("/candidate/:id", candidates.Delete)
-
-		router.POST("/election", elections.Create)
-
-		router.PUT("/election/:id", elections.Update)
-
-		router.GET("/elections", elections.GetAll)
-
-		router.GET("/election/:id", elections.Get)
-
-		router.DELETE("/election/:id", elections.Delete)
-
-		router.GET("/votes", votes.GetAll)
-
-		router.GET("/vote/:id", votes.Get)
-
-		router.POST("/vote", votes.CreateVote)
-
+			api.GET("/votes", votes.GetAll)
+			api.GET("/vote/:id", votes.Get)
+			api.POST("/vote", votes.CreateVote)
+		}
+		
 	}
 
-	r.GET("/genders", genders.GetAll)
+	
 
 	r.GET("/", func(c *gin.Context) {
 
 		c.String(http.StatusOK, "API RUNNING... PORT: %s", PORT)
 
 	})
-
+	
 	// Run the server
 
-	r.Run("localhost:" + PORT)
+	r.Run(":" + PORT)
+
 
 }
 
