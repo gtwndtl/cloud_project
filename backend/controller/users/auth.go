@@ -1,218 +1,136 @@
 package users
 
-
 import (
+	"errors"
+	"net/http"
+	"time"
 
-   "errors"
+	"github.com/gin-gonic/gin"
+	"golang.org/x/crypto/bcrypt"
+	"gorm.io/gorm"
 
-   "net/http"
-
-   "time"
-
-
-   "github.com/gin-gonic/gin"
-
-   "golang.org/x/crypto/bcrypt"
-
-   "gorm.io/gorm"
-
-
-   "example.com/se/config"
-
-   "example.com/se/entity"
-
-   "example.com/se/services"
-
+	"example.com/se/config"
+	"example.com/se/entity"
+	"example.com/se/services"
+	"example.com/se/metrics"
 )
-
 
 type (
+	Authen struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
 
-   Authen struct {
-
-       Email    string `json:"email"`
-
-       Password string `json:"password"`
-
-   }
-
-
-   signUp struct {
-
-       FirstName string    `json:"first_name"`
-
-       LastName  string    `json:"last_name"`
-
-       Email     string    `json:"email"`
-
-       Age       uint8     `json:"age"`
-
-       Password  string    `json:"password"`
-
-       Role      string `json:"role"`
-
-       BirthDay  time.Time `json:"birthday"`
-
-       GenderID  uint      `json:"gender_id"`
-
-   }
-
+	signUp struct {
+		FirstName string    `json:"first_name"`
+		LastName  string    `json:"last_name"`
+		Email     string    `json:"email"`
+		Age       uint8     `json:"age"`
+		Password  string    `json:"password"`
+		Role      string    `json:"role"`
+		BirthDay  time.Time `json:"birthday"`
+		GenderID  uint      `json:"gender_id"`
+	}
 )
 
-
+// SignUp handles user registration
 func SignUp(c *gin.Context) {
+	var payload signUp
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		metrics.UserSignupFailuresTotal.Inc()
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
-   var payload signUp
+	db := config.DB()
+	var userCheck entity.Users
+	result := db.Where("email = ?", payload.Email).First(&userCheck)
+	if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
+		metrics.UserSignupFailuresTotal.Inc()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": result.Error.Error()})
+		return
+	}
+	if userCheck.ID != 0 {
+		metrics.UserSignupFailuresTotal.Inc()
+		c.JSON(http.StatusConflict, gin.H{"error": "Email is already registered"})
+		return
+	}
 
+	hashedPassword, _ := config.HashPassword(payload.Password)
+	user := entity.Users{
+		FirstName: payload.FirstName,
+		LastName:  payload.LastName,
+		Email:     payload.Email,
+		Age:       payload.Age,
+		Password:  hashedPassword,
+		Role:      payload.Role,
+		BirthDay:  payload.BirthDay,
+		GenderID:  payload.GenderID,
+	}
 
-   // Bind JSON payload to the struct
+	if err := db.Create(&user).Error; err != nil {
+		metrics.UserSignupFailuresTotal.Inc()
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
-   if err := c.ShouldBindJSON(&payload); err != nil {
+	// Successful signup
+	metrics.UserSignupsTotal.Inc()
 
-       c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	// Update total users gauge
+	var count int64
+	db.Model(&entity.Users{}).Count(&count)
+	metrics.UsersTotal.Set(float64(count))
 
-       return
-
-   }
-
-
-   db := config.DB()
-
-   var userCheck entity.Users
-
-
-   // Check if the user with the provided email already exists
-
-   result := db.Where("email = ?", payload.Email).First(&userCheck)
-
-   if result.Error != nil && !errors.Is(result.Error, gorm.ErrRecordNotFound) {
-
-       // If there's a database error other than "record not found"
-
-       c.JSON(http.StatusInternalServerError, gin.H{"error": result.Error.Error()})
-
-       return
-
-   }
-
-
-   if userCheck.ID != 0 {
-
-       // If the user with the provided email already exists
-
-       c.JSON(http.StatusConflict, gin.H{"error": "Email is already registered"})
-
-       return
-
-   }
-
-
-   // Hash the user's password
-
-   hashedPassword, _ := config.HashPassword(payload.Password)
-
-
-   // Create a new user
-
-   user := entity.Users{
-
-       FirstName: payload.FirstName,
-
-       LastName:  payload.LastName,
-
-       Email:     payload.Email,
-
-       Age:       payload.Age,
-
-       Password:  hashedPassword,
-
-       Role: payload.Role,
-
-       BirthDay:  payload.BirthDay,
-
-       GenderID:  payload.GenderID,
-
-   }
-
-
-   // Save the user to the database
-
-   if err := db.Create(&user).Error; err != nil {
-
-       c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-
-       return
-
-   }
-
-
-   c.JSON(http.StatusCreated, gin.H{"message": "Sign-up successful"})
-
+	c.JSON(http.StatusCreated, gin.H{"message": "Sign-up successful"})
 }
 
-
+// SignIn handles user login
 func SignIn(c *gin.Context) {
+	var payload Authen
+	var user entity.Users
 
-   var payload Authen
+	if err := c.ShouldBindJSON(&payload); err != nil {
+		metrics.UserLoginFailuresTotal.Inc()
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
 
-   var user entity.Users
+	err := config.DB().Where("email = ?", payload.Email).First(&user).Error
+	if err != nil {
+		metrics.UserLoginFailuresTotal.Inc()
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid credentials"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		}
+		return
+	}
 
+	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(payload.Password)); err != nil {
+		metrics.UserLoginFailuresTotal.Inc()
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Password is incorrect"})
+		return
+	}
 
-   if err := c.ShouldBindJSON(&payload); err != nil {
+	// Successful login
+	metrics.UserLoginsTotal.Inc()
 
-       c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+	jwtWrapper := services.JwtWrapper{
+		SecretKey:       "SvNQpBN8y3qlVrsGAYYWoJJk56LtzFHx",
+		Issuer:          "AuthService",
+		ExpirationHours: 24,
+	}
+	token, err := jwtWrapper.GenerateToken(user.Email)
+	if err != nil {
+		metrics.UserLoginFailuresTotal.Inc()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Error signing token"})
+		return
+	}
 
-       return
-
-   }
-
-   // ค้นหา user ด้วย Username ที่ผู้ใช้กรอกเข้ามา
-
-   if err := config.DB().Raw("SELECT * FROM users WHERE email = ?", payload.Email).Scan(&user).Error; err != nil {
-
-       c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-
-       return
-
-   }
-
-
-   // ตรวจสอบรหัสผ่าน
-
-   err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(payload.Password))
-
-   if err != nil {
-
-       c.JSON(http.StatusBadRequest, gin.H{"error": "password is incerrect"})
-
-       return
-
-   }
-
-
-   jwtWrapper := services.JwtWrapper{
-
-       SecretKey:       "SvNQpBN8y3qlVrsGAYYWoJJk56LtzFHx",
-
-       Issuer:          "AuthService",
-
-       ExpirationHours: 24,
-
-   }
-
-
-   signedToken, err := jwtWrapper.GenerateToken(user.Email)
-
-   if err != nil {
-
-       c.JSON(http.StatusBadRequest, gin.H{"error": "error signing token"})
-
-       return
-
-   }
-
-
-   c.JSON(http.StatusOK, gin.H{"token_type": "Bearer", "token": signedToken, "id": user.ID})
-
-
+	c.JSON(http.StatusOK, gin.H{
+		"token_type": "Bearer",
+		"token":      token,
+		"id":         user.ID,
+	})
 }
